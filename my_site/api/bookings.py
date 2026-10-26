@@ -1,9 +1,13 @@
-from fastapi import APIRouter, Depends
-from my_site.schemas.booking import BookingResponseSchema
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException
+from my_site.schemas.booking import BookingResponseSchema, BookingCreateSchema, BookingStatus
 from my_site.database.mongodb import get_booking_collections
 from my_site.database.mapper import booking_document_to_response
 from .dependencies import get_current_user
 from typing import Annotated, List
+from my_site.clients.hotel_service import get_room, get_hotel
+from datetime import time, timezone, tzinfo, datetime
 
 
 booking_router = APIRouter(prefix='/bookings', tags=['Bookings'])
@@ -20,3 +24,73 @@ async def booking_list(current_user: Annotated[dict, Depends(get_current_user)])
         bookings.append(booking_document_to_response(i))
 
     return bookings
+
+
+@booking_router.post('/', response_model=BookingResponseSchema)
+async def booking_create(booking: BookingCreateSchema, current_user: Annotated[dict, Depends(get_current_user)]):
+    hotel, room = await asyncio.gather(get_hotel(booking.hotel_id), get_room(booking.room_id))
+
+    if booking.hotel_id != room['hotel']['id']:
+        raise HTTPException(status_code=400, detail='Комната не относится к выбранному отелю')
+
+    check_in_datetime = datetime.combine(
+        booking.check_in,
+        time.min,
+        tzinfo=timezone.utc
+    )
+
+    check_out_datetime = datetime.combine(
+        booking.check_out,
+        time.min,
+        tzinfo=timezone.utc
+    )
+
+
+    # data_filter = {
+    #     'room_id': booking.room_id,
+    #     'status': {
+    #         '$in': [
+    #             BookingStatus.pending.value,
+    #             BookingStatus.confirmed.value,
+    #         ]
+    #     },
+    #     'check_in': {
+    #         '$lt': check_out_datetime
+    #     },
+    #
+    #     'check_out': {
+    #         '$gt': check_in_datetime
+    #     }
+    #
+    # }
+
+    collection = get_booking_collections()
+
+    nights = (booking.check_out - booking.check_in).days
+
+    price = int(hotel['price'])
+    total_price = price * nights
+
+    booking_document = {
+        'user_id': current_user['id'],
+        'hotel_id': booking.hotel_id,
+        'hotel_name': hotel['hotel_name'],
+        'room_id': booking.room_id,
+        'room_number': room['room_number'],
+        'check_in': check_in_datetime,
+        'check_out': check_out_datetime,
+        'nights': nights,
+        'guests': booking.guests,
+        'price': price,
+        'total_price': total_price,
+        'status': BookingStatus.confirmed.value,
+        'created_date': datetime.now(timezone.utc),
+        'update_date': datetime.now(timezone.utc)
+    }
+
+    result = await collection.insert_one(booking_document)
+    booking_document['_id'] = result.inserted_id
+
+    return booking_document_to_response(
+        booking_document
+    )

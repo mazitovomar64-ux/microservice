@@ -14,6 +14,7 @@ async def verity_access_token(token: str):
         raise HTTPException(status_code=401, detail='Access token еправильный или просрочен')
 
     if response.status_code != 200:
+        print(response.status_code)
         raise HTTPException(status_code=503, detail='Ошибка')
 
     try:
